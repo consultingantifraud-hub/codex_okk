@@ -29,6 +29,9 @@ function getConfigFromSheet() {
   }
 }
 const config = getConfigFromSheet();
+const userCache = {};
+const entityCache = {};
+let pipelinesCache = null;
 
 // Чтение исключенных полей
 function readExcludedFields(sheet) {
@@ -52,11 +55,14 @@ function isCallProcessed(callNoteId) {
     const sheet = SpreadsheetApp.openById(config.SPREADSHEET_ID)
       .getSheetByName(config.SHEET_NAME);
     if (!sheet) return false;
-    const processedIds = sheet.getRange(2, 15, sheet.getLastRow()-1, 1)
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return false;
+    const processedIds = sheet.getRange(2, 15, lastRow - 1, 1)
       .getValues()
       .flat()
-      .filter(id => id !== '');
-    return processedIds.includes(callNoteId);
+      .filter(id => id !== '')
+      .map(function(id) { return String(id); });
+    return processedIds.includes(String(callNoteId));
   } catch (error) {
     console.error('❌ Ошибка проверки:', error.message);
     return false;
@@ -188,15 +194,21 @@ function getAllEntityFields(lead) {
 // Получение данных сущности
 function getEntityData(entityType, entityId) {
   try {
+    const cacheKey = `${entityType}_${entityId}`;
+    if (entityCache[cacheKey]) {
+      return entityCache[cacheKey];
+    }
     const url = `https://${config.AMO_SUBDOMAIN}/api/v4/${entityType}/${entityId}`;
     const entity = amoRequest(url);
     if (!entity) return null;
-    return {
+    const preparedEntity = {
       id: entity.id,
       name: entity.name,
       responsible: getAmoUser(entity.responsible_user_id).name,
       custom_fields_values: entity.custom_fields_values || []
     };
+    entityCache[cacheKey] = preparedEntity;
+    return preparedEntity;
   } catch (error) {
     console.error(`❌ Ошибка ${entityType} ID ${entityId}:`, error.message);
     return null;
@@ -207,8 +219,11 @@ function getEntityData(entityType, entityId) {
 function processEvent(eventData) {
   try {
     console.log(`📞 Обработка события ID: ${eventData.id}`);
-    const callNoteId = eventData.value_after?.[0]?.note?.id;
-    if (!callNoteId || isCallProcessed(callNoteId)) return;
+    const initialNoteId = eventData.value_after?.[0]?.note?.id;
+    if (initialNoteId && isCallProcessed(initialNoteId)) {
+      console.log(`🔁 Звонок ${initialNoteId} уже обработан`);
+      return;
+    }
 
     let lead;
     switch(eventData.entity_type.toLowerCase()) {
@@ -231,7 +246,17 @@ function processEvent(eventData) {
     // Получение задач и примечаний
     const tasksText = getAmoTasks(lead.id);
     const notes = getAmoNotes('leads', lead.id);
-    const callNote = notes.find(n => n.id === callNoteId);
+    const fallbackIdentifier = initialNoteId || `event-${eventData.id}`;
+    const callNote = findRelevantCallNote(notes, initialNoteId, eventData.created_at);
+    if (!callNote) {
+      console.log(`⚠️ Звонок для события ${eventData.id} найден без явного примечания, используется идентификатор ${fallbackIdentifier}`);
+    }
+    const processedIdentifier = (callNote && callNote.id) || fallbackIdentifier;
+
+    if (isCallProcessed(processedIdentifier)) {
+      console.log(`🔁 Запись ${processedIdentifier} уже присутствует в таблице`);
+      return;
+    }
 
     // Обработка примечаний
     let notesText = notes.map(note => {
@@ -297,7 +322,7 @@ function processEvent(eventData) {
       callNote?.params?.duration || 0, // 12. Длительность
       config.callStatusMap[callNote?.params?.call_status] || 'Без результата', // 13. Результат
       eventData.type === 'outgoing_call' ? 'Исходящий' : 'Входящий', // 14. Тип
-      callNoteId, // 15. ID звонка
+      processedIdentifier, // 15. ID звонка/события
       getAllEntityFields(lead) // 16. Все поля (с фильтрацией)
     ];
     appendToSheet(rowData);
@@ -373,8 +398,7 @@ function getAmoNotes(entityType, entityId) {
 // Получение воронки
 function getAmoPipeline(pipelineId) {
   try {
-    const url = `https://${config.AMO_SUBDOMAIN}/api/v4/leads/pipelines`;
-    const pipelines = amoRequest(url)?._embedded?.pipelines || [];
+    const pipelines = getPipelines();
     return pipelines.find(p => p.id === pipelineId) || { id: pipelineId, name: "Неизвестная воронка" };
   } catch (error) {
     console.error(`❌ Ошибка воронки ID ${pipelineId}:`, error.message);
@@ -385,8 +409,7 @@ function getAmoPipeline(pipelineId) {
 // Получение статуса
 function getAmoStatus(statusId, pipelineId) {
   try {
-    const url = `https://${config.AMO_SUBDOMAIN}/api/v4/leads/pipelines`;
-    const pipelines = amoRequest(url)?._embedded?.pipelines || [];
+    const pipelines = getPipelines();
     const pipeline = pipelines.find(p => p.id === pipelineId);
     const statuses = pipeline?._embedded?.statuses || [];
     return statuses.find(s => s.id === statusId) || { id: statusId, name: "Неизвестный статус" };
@@ -399,12 +422,17 @@ function getAmoStatus(statusId, pipelineId) {
 // Получение пользователя
 function getAmoUser(userId) {
   try {
+    if (userCache[userId]) {
+      return userCache[userId];
+    }
     const url = `https://${config.AMO_SUBDOMAIN}/api/v4/users/${userId}`;
     const user = amoRequest(url);
-    return user ? {
+    const preparedUser = user ? {
       id: user.id,
       name: user.name || "Неизвестный пользователь"
     } : { id: userId, name: "Неизвестный пользователь" };
+    userCache[userId] = preparedUser;
+    return preparedUser;
   } catch (error) {
     console.error(`❌ Ошибка пользователя ID ${userId}:`, error.message);
     return { id: userId, name: "Неизвестный пользователь" };
@@ -422,6 +450,50 @@ function appendToSheet(rowData) {
   } catch (error) {
     console.error('❌ Ошибка записи:', error.message);
   }
+}
+
+function getPipelines() {
+  if (pipelinesCache) {
+    return pipelinesCache;
+  }
+  const url = `https://${config.AMO_SUBDOMAIN}/api/v4/leads/pipelines`;
+  const response = amoRequest(url);
+  pipelinesCache = response?._embedded?.pipelines || [];
+  return pipelinesCache;
+}
+
+function findRelevantCallNote(notes, expectedId, eventCreatedAt) {
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return null;
+  }
+
+  if (expectedId) {
+    const exactMatch = notes.find(function(note) {
+      return note.id === expectedId;
+    });
+    if (exactMatch) {
+      return exactMatch;
+    }
+  }
+
+  const callNotes = notes.filter(function(note) {
+    return note.note_type === 'call_out' || note.note_type === 'call_in';
+  });
+
+  if (callNotes.length === 0) {
+    return null;
+  }
+
+  const sorted = callNotes.slice().sort(function(a, b) {
+    const aTime = a.created_at || 0;
+    const bTime = b.created_at || 0;
+    if (eventCreatedAt) {
+      return Math.abs(aTime - eventCreatedAt) - Math.abs(bTime - eventCreatedAt);
+    }
+    return bTime - aTime;
+  });
+
+  return sorted[0];
 }
 
 // Основная функция синхронизации
