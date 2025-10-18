@@ -448,38 +448,6 @@ function appendToSheet(rowData) {
   }
 }
 
-// Поиск листа с учетом регистра
-function getSheetByNameInsensitive(sheetName) {
-  try {
-    const spreadsheet = SpreadsheetApp.getActive();
-    if (!spreadsheet) {
-      console.error('❌ Spreadsheet не активен');
-      return null;
-    }
-
-    const directMatch = spreadsheet.getSheetByName(sheetName);
-    if (directMatch) {
-      return directMatch;
-    }
-
-    const targetName = String(sheetName || '').toLowerCase();
-    if (!targetName) {
-      return null;
-    }
-
-    const sheets = spreadsheet.getSheets();
-    for (let i = 0; i < sheets.length; i++) {
-      const sheet = sheets[i];
-      if (sheet.getName().toLowerCase() === targetName) {
-        return sheet;
-      }
-    }
-  } catch (error) {
-    console.error('❌ Ошибка поиска листа:', error.message);
-  }
-  return null;
-}
-
 function getPipelines() {
   if (pipelinesCache) {
     return pipelinesCache;
