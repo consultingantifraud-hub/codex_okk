@@ -18,7 +18,10 @@ function chatToProTalkBot() {
    
     targetSheet = SpreadsheetApp.getActive().getSheetByName(targetSheetName);
     if (!targetSheet) throw new Error(`Лист '${targetSheetName}' не найден`);
-    logsSheet = SpreadsheetApp.getActive().getSheetByName('LOGS');
+    logsSheet = getSheetByNameInsensitive('LOGS');
+    if (!logsSheet) {
+      console.warn('⚠️ Лист LOGS не найден');
+    }
 
     const dataRange = targetSheet.getDataRange();
     const values = dataRange.getValues();
@@ -111,13 +114,19 @@ function chatToProTalkBot() {
 
 function logProTalkResponse(logSheet, responseData, chatId, requestText) {
   try {
-    if (!logSheet || !responseData || typeof responseData !== 'object') {
+    if (!responseData || typeof responseData !== 'object') {
+      return;
+    }
+
+    if (!logSheet) {
+      console.warn('⚠️ Пропуск записи логов: лист не найден');
       return;
     }
 
     const directLogs = Array.isArray(responseData.logs) ? responseData.logs
       : Array.isArray(responseData.log_records) ? responseData.log_records
       : Array.isArray(responseData.debug?.logs) ? responseData.debug.logs
+      : Array.isArray(responseData.debug?.log_records) ? responseData.debug.log_records
       : [];
 
     const rows = [];
@@ -161,7 +170,7 @@ function logProTalkResponse(logSheet, responseData, chatId, requestText) {
       ]);
     }
 
-    if (rows.length) {
+    if (rows.length && rows[0].length) {
       const range = logSheet.getRange(logSheet.getLastRow() + 1, 1, rows.length, rows[0].length);
       range.setValues(rows);
     }
@@ -172,7 +181,12 @@ function logProTalkResponse(logSheet, responseData, chatId, requestText) {
 
 function logProTalkError(logSheet, chatId, error, requestText) {
   try {
-    if (!logSheet || !error) {
+    if (!error) {
+      return;
+    }
+
+    if (!logSheet) {
+      console.warn('⚠️ Пропуск записи ошибки ProTalk: лист не найден');
       return;
     }
     const row = [[

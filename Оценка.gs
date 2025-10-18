@@ -20,7 +20,10 @@ function ToProTalkBot() {
     // Получение целевого листа
     targetSheet = SpreadsheetApp.getActive().getSheetByName(targetSheetName);
     if (!targetSheet) throw new Error(`Лист '${targetSheetName}' не найден`);
-    logsSheet = SpreadsheetApp.getActive().getSheetByName('LOGS');
+    logsSheet = getSheetByNameInsensitive('LOGS');
+    if (!logsSheet) {
+      console.warn('⚠️ Лист LOGS не найден');
+    }
    
     // Поиск первой незавершенной строки (начиная со второй)
     const dataRange = targetSheet.getDataRange();
