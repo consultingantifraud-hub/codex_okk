@@ -222,3 +222,134 @@ function formatAttachmentsForLog(attachments) {
     return link ? `${name}: ${link}` : name;
   }).join('\n');
 }
+
+function runProTalkFlowForRow(targetSheet, rowIndex, questionColumn, startColumn, responseColumn, botToken, botId, logsSheet, contextLabel) {
+  const apiUrl = `https://us1.api.pro-talk.ru/api/v1.0/ask/${botToken}`;
+  const TIMEOUT_MS = 300000;
+  const startDateCell = targetSheet.getRange(rowIndex, startColumn);
+  const responseCell = targetSheet.getRange(rowIndex, responseColumn);
+  let chatId = '';
+  let lastRequestText = '';
+
+  try {
+    startDateCell.setValue(new Date());
+
+    const questionCell = targetSheet.getRange(rowIndex, questionColumn);
+    let question = questionCell.getValue();
+    if (!question) {
+      responseCell.setValue('Разговор не распознан');
+      throw new Error(`Пустой вопрос в строке ${rowIndex}`);
+    }
+
+    question = '🏁##' + question;
+    const requests = question.split('##').map(q => q.trim()).filter(Boolean);
+    if (!requests.length) {
+      responseCell.setValue('Разговор не распознан');
+      throw new Error(`Не удалось сформировать запрос для строки ${rowIndex}`);
+    }
+
+    const sanitizedLabel = String(contextLabel || '').replace(/[^a-z0-9]+/gi, '_');
+    chatId = `chat_${Date.now()}_${sanitizedLabel}`;
+    let lastResponse = null;
+
+    for (const requestText of requests) {
+      console.log(`${contextLabel}: отправка запроса: ${requestText}`);
+      lastRequestText = requestText;
+      const response = UrlFetchApp.fetch(apiUrl, {
+        method: 'post',
+        contentType: 'application/json',
+        muteHttpExceptions: true,
+        timeout: TIMEOUT_MS,
+        payload: JSON.stringify({
+          bot_id: botId,
+          chat_id: chatId,
+          message: requestText
+        })
+      });
+
+      if (response.getResponseCode() !== 200) {
+        throw new Error(`HTTP ${response.getResponseCode()}: ${response.getContentText()}`);
+      }
+
+      const result = JSON.parse(response.getContentText());
+      lastResponse = result.done;
+      logProTalkResponse(logsSheet, result, chatId, requestText);
+      console.log(`${contextLabel}: получен ответ`);
+      Utilities.sleep(1000);
+    }
+
+    const cleanResponse = lastResponse ? lastResponse.replace(/\*/g, '') : '';
+    responseCell.setValue(cleanResponse);
+    console.log(`${contextLabel}: обработка строки ${rowIndex} завершена успешно`);
+    return true;
+  } catch (error) {
+    logProTalkError(logsSheet, chatId, error, lastRequestText);
+    try {
+      responseCell.setValue('Разговор не распознан');
+    } catch (setError) {
+      console.error(`${contextLabel}: ошибка записи статуса: ${setError.message}`);
+    }
+    console.error(`${contextLabel}: ошибка обработки строки ${rowIndex}: ${error.message}`);
+    throw error;
+  }
+}
+
+function processActiveProTalkRow() {
+  console.log('Запуск обработки активной строки ProTalk');
+  const spreadsheet = SpreadsheetApp.getActive();
+  const dbSheet = spreadsheet.getSheetByName('БД');
+  if (!dbSheet) {
+    throw new Error("Лист 'БД' не найден");
+  }
+
+  const botToken = dbSheet.getRange('B5').getValue();
+  const botId = dbSheet.getRange('B6').getValue();
+  const targetSheetName = dbSheet.getRange('B4').getValue();
+
+  const targetSheet = spreadsheet.getSheetByName(targetSheetName);
+  if (!targetSheet) {
+    throw new Error(`Лист '${targetSheetName}' не найден`);
+  }
+
+  const activeSheet = spreadsheet.getActiveSheet();
+  if (activeSheet.getSheetId() !== targetSheet.getSheetId()) {
+    throw new Error('Активный лист не соответствует листу для обработки ProTalk');
+  }
+
+  const activeRange = activeSheet.getActiveRange();
+  if (!activeRange) {
+    console.log('Активная строка не выбрана');
+    return;
+  }
+
+  const rowIndex = activeRange.getRow();
+  if (rowIndex <= 1) {
+    console.log('Выберите строку данных (начиная со второй) для запуска обработки');
+    return;
+  }
+
+  const logsSheet = getSheetByNameInsensitive('LOGS');
+  if (!logsSheet) {
+    console.warn('⚠️ Лист LOGS не найден');
+  }
+
+  const errors = [];
+
+  try {
+    runProTalkFlowForRow(targetSheet, rowIndex, 20, 24, 22, botToken, botId, logsSheet, 'Транскрибация');
+  } catch (error) {
+    errors.push(`Транскрибация: ${error.message}`);
+  }
+
+  try {
+    runProTalkFlowForRow(targetSheet, rowIndex, 21, 25, 23, botToken, botId, logsSheet, 'Оценка');
+  } catch (error) {
+    errors.push(`Оценка: ${error.message}`);
+  }
+
+  if (errors.length) {
+    throw new Error(errors.join(' | '));
+  }
+
+  console.log(`Активная строка ${rowIndex} успешно обработана`);
+}
