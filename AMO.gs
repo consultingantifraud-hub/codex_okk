@@ -32,6 +32,7 @@ const config = getConfigFromSheet();
 const userCache = {};
 const entityCache = {};
 let pipelinesCache = null;
+let processedCallIdsCache = null;
 
 // Чтение исключенных полей
 function readExcludedFields(sheet) {
@@ -52,17 +53,11 @@ function formatTimestamp(timestamp) {
 // Проверка обработки звонка
 function isCallProcessed(callNoteId) {
   try {
-    const sheet = SpreadsheetApp.openById(config.SPREADSHEET_ID)
-      .getSheetByName(config.SHEET_NAME);
-    if (!sheet) return false;
-    const lastRow = sheet.getLastRow();
-    if (lastRow < 2) return false;
-    const processedIds = sheet.getRange(2, 15, lastRow - 1, 1)
-      .getValues()
-      .flat()
-      .filter(id => id !== '')
-      .map(function(id) { return String(id); });
-    return processedIds.includes(String(callNoteId));
+    if (!callNoteId) {
+      return false;
+    }
+    const processedIds = getProcessedCallIds();
+    return processedIds.has(String(callNoteId));
   } catch (error) {
     console.error('❌ Ошибка проверки:', error.message);
     return false;
@@ -447,6 +442,7 @@ function appendToSheet(rowData) {
     if (!sheet) throw new Error('Лист не найден');
     sheet.appendRow(rowData);
     console.log('✅ Данные записаны:', rowData);
+    markCallAsProcessed(rowData[14]);
   } catch (error) {
     console.error('❌ Ошибка записи:', error.message);
   }
@@ -531,6 +527,7 @@ function findRelevantCallNote(notes, expectedId, eventCreatedAt) {
 // Основная функция синхронизации
 function syncEventsToday() {
   try {
+    resetProcessedCallIdsCache();
     const timeFrom = Math.floor((new Date().getTime() - 3 * 60 * 1000) / 1000); // 3 минут
     let url = `https://${config.AMO_SUBDOMAIN}/api/v4/events?filter[created_at][from]=${timeFrom}&limit=250`;
     let allEvents = [];
@@ -548,4 +545,50 @@ function syncEventsToday() {
   } catch (error) {
     console.error('❌ Ошибка синхронизации:', error.message);
   }
+}
+
+function getProcessedCallIds() {
+  if (processedCallIdsCache) {
+    return processedCallIdsCache;
+  }
+
+  processedCallIdsCache = new Set();
+
+  try {
+    const sheet = SpreadsheetApp.openById(config.SPREADSHEET_ID)
+      .getSheetByName(config.SHEET_NAME);
+    if (!sheet) {
+      return processedCallIdsCache;
+    }
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) {
+      return processedCallIdsCache;
+    }
+    const values = sheet.getRange(2, 15, lastRow - 1, 1).getValues();
+    values.forEach(function(row) {
+      const value = row[0];
+      if (value !== '' && value !== null && value !== undefined) {
+        processedCallIdsCache.add(String(value));
+      }
+    });
+  } catch (error) {
+    console.error('❌ Ошибка чтения обработанных звонков:', error.message);
+  }
+
+  return processedCallIdsCache;
+}
+
+function markCallAsProcessed(callNoteId) {
+  if (!callNoteId) {
+    return;
+  }
+  try {
+    getProcessedCallIds().add(String(callNoteId));
+  } catch (error) {
+    console.error('❌ Ошибка сохранения ID звонка:', error.message);
+  }
+}
+
+function resetProcessedCallIdsCache() {
+  processedCallIdsCache = null;
 }
