@@ -1,5 +1,9 @@
 function ToProTalkBot() {
   let rowToProcess = null; // Переменная для хранения строки
+  let targetSheet = null;
+  let logsSheet = null;
+  let chatId = '';
+  let lastRequestText = '';
   try {
     console.log("Начало выполнения скрипта");
    
@@ -14,8 +18,9 @@ function ToProTalkBot() {
     console.log(`Настройки: лист ${targetSheetName}, botId=${botId}, token=${botToken}`);
    
     // Получение целевого листа
-    const targetSheet = SpreadsheetApp.getActive().getSheetByName(targetSheetName);
+    targetSheet = SpreadsheetApp.getActive().getSheetByName(targetSheetName);
     if (!targetSheet) throw new Error(`Лист '${targetSheetName}' не найден`);
+    logsSheet = SpreadsheetApp.getActive().getSheetByName('LOGS');
    
     // Поиск первой незавершенной строки (начиная со второй)
     const dataRange = targetSheet.getDataRange();
@@ -54,7 +59,7 @@ function ToProTalkBot() {
     const requests = question.split("##").map(q => q.trim()).filter(Boolean);
    
     // Настройки API
-    const chatId = "chat_" + Date.now();
+    chatId = "chat_" + Date.now();
     const apiUrl = `https://us1.api.pro-talk.ru/api/v1.0/ask/${botToken}`;
     let lastResponse = null;
    
@@ -64,6 +69,7 @@ function ToProTalkBot() {
     for (const q of requests) {
       try {
         console.log(`Отправка запроса: ${q}`);
+        lastRequestText = q;
         const response = UrlFetchApp.fetch(apiUrl, {
           method: "post",
           contentType: "application/json",
@@ -83,8 +89,9 @@ function ToProTalkBot() {
         const result = JSON.parse(response.getContentText());
         lastResponse = result.done;
         console.log(`Получен ответ: ${lastResponse}`);
+        logProTalkResponse(logsSheet, result, chatId, q);
         Utilities.sleep(1000);
-       
+
       } catch (e) {
         console.error(`Ошибка в запросе: ${e.message}`);
         throw e; // Пробрасываем в основной catch
@@ -99,7 +106,8 @@ function ToProTalkBot() {
    
   } catch (e) {
     console.error("Произошла ошибка: " + e.message);
-   
+    logProTalkError(logsSheet, chatId, e, lastRequestText);
+
     // Гарантированная запись ошибки в колонку W
     if (rowToProcess && targetSheet) {
       try {
